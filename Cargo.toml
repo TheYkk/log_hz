@@ -1,0 +1,17 @@
+[package]
+name = "log_hz"
+version = "0.1.0"
+edition = "2024"
+authors = ["Carter <carterjschultz@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+description = "A logging library that provides macros for logging at a throttled rate."
+repository = "https://github.com/carter12s/log_hz"
+keywords = ["logging", "log", "throttle", "throttled", "hz"]
+categories = ["development-tools::debugging"]
+
+[dependencies]
+log = "0.4"
+
+[dev-dependencies]
+testing_logger = "0.1"
