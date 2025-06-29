@@ -12,18 +12,15 @@ categories = ["development-tools::debugging"]
 
 [dependencies]
 log = "0.4"
+coarsetime = { version = "0.1", optional = true }
 
 [dev-dependencies]
 testing_logger = "0.1"
 criterion = { version = "0.6.0", features = ["html_reports"] }
-rayon = "1.10.0"
-minstant = "0.1.7"
-libc = "0.2"
-coarsetime = "0.1"
 
 [features]
 default = []
-lockfree = []
+coarsetime = ["dep:coarsetime"]
 
 [[bench]]
 name = "log_hz_benchmarks"

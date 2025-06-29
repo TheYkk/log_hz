@@ -81,196 +81,118 @@
 //! See the documentation for the logger you are using for more information.
 //!
 //! Note: This crate uses `std::time::Instant` to track time, which is not available in `no_std` environments.
-//! If you're interested in alternative timing backends for this crate, feel free to open an issue or PR to add them behind features. 
+//! If you're interested in alternative timing backends for this crate, feel free to open an issue or PR to add them behind features.
 
 pub use log::*;
 
-// Original mutex-based implementation
-#[cfg(not(feature = "lockfree"))]
-mod mutex_impl {
-    use super::*;
+/// Log a message at [Level::Error] at a throttled rate, first call will always log.
+#[macro_export]
+macro_rules! error_hz {
+    ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Error, $rate, $($arg)+); }
+}
 
-    /// Log a message at [Level::Error] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! error_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Error, $rate, $($arg)+); }
-    }
+/// Log a message at [Level::Warn] at a throttled rate, first call will always log.
+#[macro_export]
+macro_rules! warn_hz {
+    ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Warn, $rate, $($arg)+); }
+}
 
-    /// Log a message at [Level::Warn] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! warn_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Warn, $rate, $($arg)+); }
-    }
+/// Log a message at [Level::Info] at a throttled rate, first call will always log.
+#[macro_export]
+macro_rules! info_hz {
+    ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Info, $rate, $($arg)+); }
+}
 
-    /// Log a message at [Level::Info] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! info_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Info, $rate, $($arg)+); }
-    }
+/// Log a message at [Level::Debug] at a throttled rate, first call will always log.
+#[macro_export]
+macro_rules! debug_hz {
+    ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Debug, $rate, $($arg)+); }
+}
 
-    /// Log a message at [Level::Debug] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! debug_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Debug, $rate, $($arg)+); }
-    }
+/// Log a message at [Level::Trace] at a throttled rate, first call will always log.
+#[macro_export]
+macro_rules! trace_hz {
+    ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Trace, $rate, $($arg)+); }
+}
 
-    /// Log a message at [Level::Trace] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! trace_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Trace, $rate, $($arg)+); }
-    }
+/// Log a message at the specified level at a throttled rate, first call will always log.
+///
+/// This version uses an AtomicU64 and a compare-and-swap loop to manage the throttling in a lock-free manner.
+/// It provides better performance than the mutex-based version, especially under high contention.
+///
+/// An optional `coarsetime` feature can be enabled to use a faster, but less precise, time source
+/// on platforms that support it (currently Linux with `CLOCK_MONOTONIC_COARSE`).
+#[macro_export]
+macro_rules! log_hz {
+    ($level:expr, $rate:expr, $($arg:tt)+) => {
+        // Inner scope to encapsulate static variables
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            use std::sync::LazyLock;
 
-    /// Log a message at the specified level at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! log_hz {
-        ($level:expr, $rate:expr, $($arg:tt)+) => {
-            // Need an inner scope to hide variables
-            {
-                // Each invocation of the macro gets its own static variable in a private scope
-                // Mutex<Option<Instant>> so we can initialize it lazily, and mutate it safely
-                // TODO there is almost certainly a faster way to do this, but this is fully safe
-                static TIC: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-                // Using LazyLock to cache the interval calculation
-                static INTERVAL: std::sync::LazyLock<std::time::Duration> = std::sync::LazyLock::new(|| std::time::Duration::from_secs_f32(1.0 / ($rate as f32)));
-                let mut tick = TIC.lock().expect("log_hz mutex was poisoned, this should never happen");
-                match *tick {
-                    // If we haven't logged before, log and set the tick
-                    None => {
-                        *tick = Some(std::time::Instant::now());
-                        $crate::log!($level, $($arg)+);
-                    },
-                    // If we have logged before, check the interval
-                    Some(ref mut tick) => {
-                        let now = std::time::Instant::now();
-                        let time_since_last = now.duration_since(*tick);
-                        if time_since_last > *INTERVAL {
-                            // If it's been long enough, log and update the tick
-                            *tick = now;
-                            $crate::log!($level, $($arg)+);
-                        }
-                    }
+            #[cfg(not(feature = "coarsetime"))]
+            use std::time::Instant;
+            #[cfg(feature = "coarsetime")]
+            use coarsetime::Instant;
+
+            // A shared, static start time for the process.
+            // Using LazyLock ensures it's initialized only once.
+            static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+            // The interval between log messages in nanoseconds.
+            // Calculated once and cached. A rate of 0 or less disables logging.
+            static INTERVAL_NS: LazyLock<u64> = LazyLock::new(|| {
+                let rate_f64 = $rate as f64;
+                if rate_f64 > 0.0 {
+                    (1.0 / rate_f64 * 1_000_000_000.0) as u64
+                } else {
+                    u64::MAX
                 }
+            });
+
+            // The timestamp of the last log, stored as nanoseconds since START_TIME.
+            // Initialized to 0, which ensures the first log message always gets through.
+            static LAST_LOG_NS: AtomicU64 = AtomicU64::new(0);
+
+            // --- Fast Path ---
+            // This is the most common path, executed on every call to the macro.
+            // It's designed to be as cheap as possible.
+
+            // First, perform a quick, optimistic check to see if we should log.
+            // We use `Relaxed` ordering because it's the cheapest, and we're not
+            // yet synchronizing memory. We just want to bail out early if possible.
+            let last_ns = LAST_LOG_NS.load(Ordering::Relaxed);
+            let now = Instant::now();
+            let elapsed_ns = now.duration_since(*START_TIME).as_nanos() as u64;
+
+            // Check if enough time has passed since the last log.
+            // `saturating_sub` prevents a panic in the rare case of time moving backward.
+            if elapsed_ns.saturating_sub(last_ns) >= *INTERVAL_NS {
+                // --- Slow Path ---
+                // We might get to log. Now we need to ensure only one thread does.
+                // We use a `compare_exchange` to atomically update the timestamp.
+                // This operation attempts to replace `last_ns` with `elapsed_ns` only if
+                // the current value is still `last_ns`.
+                //
+                // Ordering::AcqRel (Acquire-Release):
+                //   - If successful, this creates a memory barrier that ensures:
+                //     1. (Acquire) Any writes from other threads that happened before are visible now.
+                //     2. (Release) The log message we are about to write will be visible to
+                //        other threads that later access this atomic variable.
+                // Ordering::Relaxed (on failure):
+                //   - If we fail, it means another thread won the race. We don't need to
+                //     synchronize memory, so we use the cheapest ordering.
+                if LAST_LOG_NS.compare_exchange(last_ns, elapsed_ns, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    // We successfully updated the timestamp, so we have the "right" to log.
+                    $crate::log!($level, $($arg)+);
+                }
+                // If the `compare_exchange` failed, another thread logged in the tiny
+                // window between our `load` and `compare_exchange`. We simply do nothing,
+                // which correctly throttles the message.
             }
         }
-    }
+    };
 }
-
-// Lock-free implementation
-#[cfg(feature = "lockfree")]
-mod lockfree_impl {
-    use super::*;
-
-    /// Log a message at [Level::Error] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! error_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Error, $rate, $($arg)+); }
-    }
-
-    /// Log a message at [Level::Warn] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! warn_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Warn, $rate, $($arg)+); }
-    }
-
-    /// Log a message at [Level::Info] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! info_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Info, $rate, $($arg)+); }
-    }
-
-    /// Log a message at [Level::Debug] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! debug_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Debug, $rate, $($arg)+); }
-    }
-
-    /// Log a message at [Level::Trace] at a throttled rate, first call will always log.
-    #[macro_export]
-    macro_rules! trace_hz {
-        ($rate:expr,$($arg:tt)+) => { $crate::log_hz!($crate::Level::Trace, $rate, $($arg)+); }
-    }
-
-    /// Log a message at the specified level at a throttled rate, first call will always log.
-    /// 
-    /// This version uses an AtomicU64 and a compare-and-swap loop to manage the throttling in a lock-free manner.
-    /// It provides better performance than the mutex-based version, especially under high contention.
-    #[macro_export]
-    macro_rules! log_hz {
-        ($level:expr, $rate:expr, $($arg:tt)+) => {
-            // Inner scope to encapsulate static variables
-            {
-                use std::sync::atomic::{AtomicU64, Ordering};
-                use std::sync::LazyLock;
-                use std::time::{Duration, Instant};
-
-                // A shared, static start time for the process.
-                // Using LazyLock ensures it's initialized only once.
-                static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
-
-                // The interval between log messages in nanoseconds.
-                // Calculated once and cached. Handles cases where the rate is <= 0.
-                static INTERVAL_NS: LazyLock<u64> = LazyLock::new(|| {
-                    let rate_f64 = $rate as f64;
-                    // If rate is positive, calculate the interval. Otherwise, interval is 0,
-                    // meaning we should try to log on every call.
-                    if rate_f64 > 0.0 {
-                        (1.0 / rate_f64 * 1_000_000_000.0) as u64
-                    } else {
-                        0
-                    }
-                });
-
-                // The timestamp of the last log, stored as nanoseconds since START_TIME.
-                // Initialized to 0, which ensures the first log message always gets through.
-                static LAST_LOG_NS: AtomicU64 = AtomicU64::new(0);
-
-                // --- Fast Path ---
-                // This is the most common path, executed on every call to the macro.
-                // It's designed to be as cheap as possible.
-
-                // First, perform a quick, optimistic check to see if we should log.
-                // We use `Relaxed` ordering because it's the cheapest, and we're not
-                // yet synchronizing memory. We just want to bail out early if possible.
-                let last_ns = LAST_LOG_NS.load(Ordering::Relaxed);
-                let now = Instant::now();
-                let elapsed_ns = now.duration_since(*START_TIME).as_nanos() as u64;
-
-                // Check if enough time has passed since the last log.
-                // `saturating_sub` prevents a panic in the rare case of time moving backward.
-                if elapsed_ns.saturating_sub(last_ns) >= *INTERVAL_NS {
-                    // --- Slow Path ---
-                    // We might get to log. Now we need to ensure only one thread does.
-                    // We use a `compare_exchange` to atomically update the timestamp.
-                    // This operation attempts to replace `last_ns` with `elapsed_ns` only if
-                    // the current value is still `last_ns`.
-                    //
-                    // Ordering::AcqRel (Acquire-Release):
-                    //   - If successful, this creates a memory barrier that ensures:
-                    //     1. (Acquire) Any writes from other threads that happened before are visible now.
-                    //     2. (Release) The log message we are about to write will be visible to
-                    //        other threads that later access this atomic variable.
-                    // Ordering::Relaxed (on failure):
-                    //   - If we fail, it means another thread won the race. We don't need to
-                    //     synchronize memory, so we use the cheapest ordering.
-                    if LAST_LOG_NS.compare_exchange(last_ns, elapsed_ns, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-                        // We successfully updated the timestamp, so we have the "right" to log.
-                        $crate::log!($level, $($arg)+);
-                    }
-                    // If the `compare_exchange` failed, another thread logged in the tiny
-                    // window between our `load` and `compare_exchange`. We simply do nothing,
-                    // which correctly throttles the message.
-                }
-            }
-        };
-    }
-}
-
-// Default to mutex implementation if no feature is specified
-#[cfg(not(feature = "lockfree"))]
-pub use mutex_impl::*;
-
-#[cfg(feature = "lockfree")]
-pub use lockfree_impl::*;
 
 #[cfg(test)]
 mod tests {
