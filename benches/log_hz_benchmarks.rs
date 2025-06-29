@@ -1,6 +1,6 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use log_hz::*;
-use std::sync::LazyLock;
+use std::{hint::black_box, sync::LazyLock};
 
 // Original mutex-based log_hz macro for comparison
 macro_rules! log_hz_mutex {
@@ -79,5 +79,5 @@ fn benchmark_mutex_vs_lockfree(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, benchmark_mutex_vs_lockfree,);
+criterion_group!(benches, benchmark_mutex_vs_lockfree);
 criterion_main!(benches);
